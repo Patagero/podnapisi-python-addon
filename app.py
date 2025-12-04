@@ -5,75 +5,12 @@ from bs4 import BeautifulSoup
 import zipfile
 import io
 import re
-import os
 
 app = Flask(__name__)
 CORS(app)
 
-USERNAME = os.environ.get("PN_USERNAME", "")
-PASSWORD = os.environ.get("PN_PASSWORD", "")
-
-LOGIN_URL = "https://www.podnapisi.net/sl/users/login"
 SEARCH_URL = "https://www.podnapisi.net/sl/subtitles/search"
 DETAIL_URL = "https://www.podnapisi.net"
-
-session = requests.Session()
-cookies_loaded = False
-
-
-# -----------------------------
-# LOGIN FIXED
-# -----------------------------
-def login_if_needed():
-    global cookies_loaded
-    if cookies_loaded:
-        return True
-
-    print("🔐 Fetching login page…")
-
-    r = session.get(LOGIN_URL, headers={"User-Agent": "Mozilla/5.0"})
-    soup = BeautifulSoup(r.text, "lxml")
-
-    csrf_input = soup.find("input", {"name": "_token"})
-    if not csrf_input:
-        print("❌ No CSRF token found!")
-        return False
-
-    csrf_token = csrf_input["value"]
-    print("🔑 CSRF token:", csrf_token)
-
-    # REAL LOGIN FIELDS (verified)
-    payload = {
-        "_token": csrf_token,
-        "mail": USERNAME,         # THIS WORKS even if username is not an email
-        "password": PASSWORD,
-        "remember-me": "on"
-    }
-
-    headers_post = {
-        "User-Agent": "Mozilla/5.0",
-        "Referer": LOGIN_URL,
-        "Origin": "https://www.podnapisi.net",
-        "Content-Type": "application/x-www-form-urlencoded",
-    }
-
-    print(f"🔐 Logging in as: {USERNAME}")
-
-    resp = session.post(
-        LOGIN_URL,
-        data=payload,
-        headers=headers_post,
-        allow_redirects=True
-    )
-
-    # SUCCESS CHECKS
-    if "Odjava" in resp.text or USERNAME.lower() in resp.text.lower():
-        print("✅ Login successful!")
-        cookies_loaded = True
-        return True
-
-    print("❌ Login failed!")
-    return False
 
 
 # -----------------------------
@@ -81,7 +18,7 @@ def login_if_needed():
 # -----------------------------
 def imdb_to_title(imdb_id):
     url = f"https://www.imdb.com/title/{imdb_id}/"
-    print("📡 Fetching IMDb:", url)
+    print("📡 IMDb:", url)
 
     r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"})
     if r.status_code != 200:
@@ -95,7 +32,7 @@ def imdb_to_title(imdb_id):
         return None
 
     clean = re.sub(r"\(\d{4}\).*", "", meta["content"]).strip()
-    print("🎬 Title parsed:", clean)
+    print("🎬 Parsed title:", clean)
     return clean
 
 
@@ -103,15 +40,15 @@ def imdb_to_title(imdb_id):
 # Search Podnapisi.net
 # -----------------------------
 def find_subtitles(title):
-    print("🔍 Searching Podnapisi.net for:", title)
+    print("🔍 Searching:", title)
 
     params = {
         "keywords": title,
         "language": "sl",
-        "sort": "downloads"
+        "sort": "downloads",
     }
 
-    r = session.get(SEARCH_URL, params=params, headers={"User-Agent": "Mozilla/5.0"})
+    r = requests.get(SEARCH_URL, params=params, headers={"User-Agent": "Mozilla/5.0"})
     soup = BeautifulSoup(r.text, "html.parser")
 
     items = soup.select(".subtitle-entry")
@@ -129,21 +66,21 @@ def find_subtitles(title):
         out.append({
             "id": href.split("/")[-1],
             "url": DETAIL_URL + href,
-            "name": link.text.strip(),
+            "title": link.text.strip(),
             "lang": "sl"
         })
 
-    print(f"✅ Found {len(out)} subtitles")
+    print("✅ Found:", len(out))
     return out
 
 
 # -----------------------------
-# Download subtitle ZIP + extract SRT
+# Download ZIP → extract SRT
 # -----------------------------
 def download_subtitle(url):
     print("⬇ Downloading:", url)
-    r = session.get(url, headers={"User-Agent": "Mozilla/5.0"})
 
+    r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"})
     if r.status_code != 200:
         print("❌ ZIP download failed")
         return None
@@ -152,10 +89,13 @@ def download_subtitle(url):
 
     for f in z.namelist():
         if f.lower().endswith(".srt"):
-            print("📦 Extracting:", f)
-            return z.read(f).decode("utf-8", errors="ignore")
+            print("📦 Extracted:", f)
+            try:
+                return z.read(f).decode("utf-8", errors="ignore")
+            except:
+                return z.read(f).decode("iso-8859-1", errors="ignore")
 
-    print("❌ No SRT inside ZIP")
+    print("❌ No SRT found")
     return None
 
 
@@ -166,9 +106,9 @@ def download_subtitle(url):
 def manifest():
     return jsonify({
         "id": "org.formio.podnapisi.python",
-        "version": "1.0.0",
-        "name": "Podnapisi.NET 🇸🇮 Python Addon",
-        "description": "Slovenski podnapisi iz Podnapisi.NET (Python brez Chromium).",
+        "name": "Podnapisi.NET 🇸🇮 (no-login)",
+        "version": "1.1.0",
+        "description": "Slovenski podnapisi iz Podnapisi.NET brez prijave.",
         "idPrefixes": ["tt"],
         "types": ["movie", "series"],
         "resources": ["subtitles"]
@@ -176,50 +116,43 @@ def manifest():
 
 
 # -----------------------------
-# Stremio Subtitles Endpoint
+# Main Subtitles Endpoint
 # -----------------------------
 @app.route("/subtitles/<type>/<imdb_id>.json")
 def subtitles(type, imdb_id):
-
-    if not login_if_needed():
-        return jsonify({"subtitles": []})
 
     title = imdb_to_title(imdb_id)
     if not title:
         return jsonify({"subtitles": []})
 
-    subs = find_subtitles(title)
+    search_results = find_subtitles(title)
     out = []
 
-    for s in subs:
-        dl_url = s["url"] + "/download"
-        srt_text = download_subtitle(dl_url)
-
-        if not srt_text:
+    for s in search_results:
+        srt = download_subtitle(s["url"] + "/download")
+        if not srt:
             continue
 
         out.append({
             "id": s["id"],
             "lang": "sl",
-            "title": s["name"],
-            "subtitles": srt_text
+            "title": s["title"],
+            "subtitles": srt
         })
 
     return jsonify({"subtitles": out})
 
 
 # -----------------------------
-# Diagnostic Test Endpoint
+# Diagnostic Test
 # -----------------------------
 @app.route("/test/<imdb>")
 def test(imdb):
-    ok = login_if_needed()
     title = imdb_to_title(imdb)
     results = find_subtitles(title) if title else []
 
     return jsonify({
         "imdb": imdb,
-        "login_success": ok,
         "title": title,
         "results_found": len(results)
     })
