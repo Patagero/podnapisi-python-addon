@@ -1,4 +1,4 @@
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 from flask_cors import CORS
 import requests
 from bs4 import BeautifulSoup
@@ -9,165 +9,177 @@ import re
 app = Flask(__name__)
 CORS(app)
 
-SEARCH_URL = "https://www.podnapisi.net/sl/subtitles/search"
-DETAIL_URL = "https://www.podnapisi.net"
+BASE = "https://www.podnapisi.net"
 
 
-# -----------------------------
+# ---------------------------------------------------
 # IMDb → Title
-# -----------------------------
-def imdb_to_title(imdb_id):
-    url = f"https://www.imdb.com/title/{imdb_id}/"
-    print("📡 IMDb:", url)
-
+# ---------------------------------------------------
+def imdb_to_title(imdb):
+    url = f"https://www.imdb.com/title/{imdb}/"
     r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"})
     if r.status_code != 200:
-        print("❌ IMDb fetch failed")
         return None
 
     soup = BeautifulSoup(r.text, "html.parser")
-    meta = soup.find("meta", property="og:title")
-
-    if not meta:
+    tag = soup.find("meta", property="og:title")
+    if not tag:
         return None
 
-    clean = re.sub(r"\(\d{4}\).*", "", meta["content"]).strip()
-    print("🎬 Parsed title:", clean)
+    title = tag["content"]
+    clean = re.sub(r"\(\d{4}\).*", "", title).strip()
     return clean
 
 
-# -----------------------------
-# Search Podnapisi.net (NEW PARSER)
-# -----------------------------
-def find_subtitles(title):
-    print("🔍 Searching for:", title)
+# ---------------------------------------------------
+# SEARCH – Using MOVIE PAGE (NO LOGIN REQUIRED)
+# ---------------------------------------------------
+def search_movie(title):
+    print("🔍 Searching movie:", title)
 
-    params = {
-        "keywords": title,
-        "language": "sl",
-        "sort": "downloads"
-    }
+    # Example: https://www.podnapisi.net/sl/movie/titanic-1997
+    url = f"{BASE}/sl/movie?keywords={title}"
 
-    r = requests.get(SEARCH_URL, params=params, headers={"User-Agent": "Mozilla/5.0"})
+    r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"})
+    if r.status_code != 200:
+        print("❌ Movie search failed")
+        return []
+
     soup = BeautifulSoup(r.text, "html.parser")
 
-    results = []
+    # All movies matching title
+    links = soup.select("a[href*='/sl/movie/']")
 
-    # NEW STRUCTURE 1 — table row format
-    rows = soup.select("tr.subtitle-row a[href]")
-    for a in rows:
-        href = a.get("href")
-        if href.startswith("/sl/subtitles/"):
-            results.append({
-                "id": href.split("/")[-1],
-                "url": DETAIL_URL + href,
-                "title": a.get_text(strip=True),
-                "lang": "sl"
-            })
-
-    # NEW STRUCTURE 2 — div-based table rows
-    links = soup.select("div.table-row a[href]")
+    movies = []
     for a in links:
         href = a.get("href")
-        if href.startswith("/sl/subtitles/"):
-            results.append({
-                "id": href.split("/")[-1],
-                "url": DETAIL_URL + href,
-                "title": a.get_text(strip=True),
-                "lang": "sl"
-            })
+        if "/sl/movie/" in href and "edit" not in href:
+            movies.append(BASE + href)
 
-    print(f"✅ Found {len(results)} subtitles")
-    return results
+    print("🎬 Movie candidates found:", len(movies))
+    return movies
 
 
-# -----------------------------
-# Download ZIP → extract SRT
-# -----------------------------
-def download_subtitle(url):
+# ---------------------------------------------------
+# Extract subtitles from a MOVIE PAGE
+# ---------------------------------------------------
+def extract_subtitles(movie_url):
+    print("📄 Checking movie page:", movie_url)
+
+    r = requests.get(movie_url, headers={"User-Agent": "Mozilla/5.0"})
+    if r.status_code != 200:
+        print("❌ Cannot load movie page")
+        return []
+
+    soup = BeautifulSoup(r.text, "html.parser")
+
+    rows = soup.select("table tbody tr")
+
+    subs = []
+
+    for row in rows:
+        lang = row.select_one("td:nth-child(4) img")
+        if not lang:
+            continue
+
+        if "sl" not in lang.get("src", ""):
+            continue  # only Slovenian
+
+        link = row.select_one("a[href*='/sl/subtitles/']")
+        if not link:
+            continue
+
+        sub_url = BASE + link.get("href")
+        name = link.text.strip()
+
+        subs.append({
+            "name": name,
+            "url": sub_url + "/download"
+        })
+
+    print("📦 Found subtitles:", len(subs))
+    return subs
+
+
+# ---------------------------------------------------
+# Download ZIP → SRT text
+# ---------------------------------------------------
+def download_srt(url):
     print("⬇ Downloading:", url)
 
     r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"})
     if r.status_code != 200:
-        print("❌ ZIP download failed")
+        print("❌ Cannot download file")
         return None
 
-    z = zipfile.ZipFile(io.BytesIO(r.content))
-
-    for f in z.namelist():
-        if f.lower().endswith(".srt"):
-            print("📦 Extracted:", f)
-            try:
+    try:
+        z = zipfile.ZipFile(io.BytesIO(r.content))
+        for f in z.namelist():
+            if f.endswith(".srt"):
                 return z.read(f).decode("utf-8", errors="ignore")
-            except:
-                return z.read(f).decode("iso-8859-1", errors="ignore")
+    except:
+        return None
 
-    print("❌ No SRT found")
     return None
 
 
-# -----------------------------
-# Manifest
-# -----------------------------
+# ---------------------------------------------------
+# MANIFEST
+# ---------------------------------------------------
 @app.route("/manifest.json")
 def manifest():
     return jsonify({
         "id": "org.formio.podnapisi.python",
-        "name": "Podnapisi.NET 🇸🇮 (no-login)",
-        "version": "1.2.0",
-        "description": "Slovenski podnapisi iz Podnapisi.NET brez prijave.",
-        "idPrefixes": ["tt"],
+        "version": "2.0.0",
+        "name": "Podnapisi.NET 🇸🇮 Python Addon (No Login)",
+        "description": "Slovenski podnapisi iz Podnapisi.NET – brez Chromium, brez logina.",
         "types": ["movie", "series"],
+        "idPrefixes": ["tt"],
         "resources": ["subtitles"]
     })
 
 
-# -----------------------------
-# Main Subtitles Endpoint
-# -----------------------------
-@app.route("/subtitles/<type>/<imdb_id>.json")
-def subtitles(type, imdb_id):
+# ---------------------------------------------------
+# SUBTITLES ENDPOINT
+# ---------------------------------------------------
+@app.route("/subtitles/<video_type>/<imdb>.json")
+def subtitles(video_type, imdb):
 
-    title = imdb_to_title(imdb_id)
+    print("🎬 IMDb:", imdb)
+
+    title = imdb_to_title(imdb)
     if not title:
         return jsonify({"subtitles": []})
 
-    search_results = find_subtitles(title)
+    print("🎞 Title:", title)
+
+    movies = search_movie(title)
+    if not movies:
+        return jsonify({"subtitles": []})
+
+    # Use first match
+    movie_url = movies[0]
+
+    subs = extract_subtitles(movie_url)
     out = []
 
-    for s in search_results:
-        dl_url = s["url"] + "/download"
-        srt = download_subtitle(dl_url)
-        if not srt:
+    for s in subs:
+        content = download_srt(s["url"])
+        if not content:
             continue
 
         out.append({
-            "id": s["id"],
             "lang": "sl",
-            "title": s["title"],
-            "subtitles": srt
+            "title": s["name"],
+            "id": s["name"],
+            "subtitles": content
         })
 
     return jsonify({"subtitles": out})
 
 
-# -----------------------------
-# Diagnostic Test
-# -----------------------------
-@app.route("/test/<imdb>")
-def test(imdb):
-    title = imdb_to_title(imdb)
-    results = find_subtitles(title) if title else []
-
-    return jsonify({
-        "imdb": imdb,
-        "title": title,
-        "results_found": len(results)
-    })
-
-
-# -----------------------------
-# Run server
-# -----------------------------
+# ---------------------------------------------------
+# RUN
+# ---------------------------------------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
