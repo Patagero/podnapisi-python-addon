@@ -5,6 +5,7 @@ import zipfile
 import tempfile
 from flask import Flask, jsonify, send_file
 from bs4 import BeautifulSoup
+from flask_cors import CORS   # 🔥 DODANO – CORS FIX
 
 # -----------------------------------
 # CONFIG
@@ -20,6 +21,7 @@ session = requests.Session()
 cookies_loaded = False
 
 app = Flask(__name__)
+CORS(app, resources={r"/*": {"origins": "*"}})  # 🔥 STREMIO FIX
 
 
 # -----------------------------------
@@ -131,14 +133,13 @@ def manifest():
     })
 
 
-@app.route("/subtitles/<type>/<imdb>.json")
-def subtitles(type, imdb):
-    print("🎬 Request:", imdb)
+@app.route("/subtitles/<stype>/<imdb_id>.json")
+def subtitles(stype, imdb_id):
+    print("🎬 Request:", imdb_id)
 
-    title = imdb
-    results = find_subtitles(title)
+    results = find_subtitles(imdb_id)
 
-    base_url = os.getenv("RENDER_EXTERNAL_URL", request_url())
+    base = os.getenv("RENDER_EXTERNAL_URL", f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME', 'podnapisi-python-addon.onrender.com')}")
 
     subtitles = []
     idx = 1
@@ -149,7 +150,7 @@ def subtitles(type, imdb):
             continue
 
         fname = os.path.basename(srt)
-        url = f"{base_url}/file/{fname}"
+        url = f"{base}/file/{fname}"
 
         subtitles.append({
             "id": f"srt-{idx}",
@@ -160,14 +161,6 @@ def subtitles(type, imdb):
         idx += 1
 
     return jsonify({"subtitles": subtitles})
-
-
-def request_url():
-    # Render sets X-Forwarded-Proto and Host correctly
-    proto = os.getenv("RENDER_EXTERNAL_URL", "")
-    if proto:
-        return proto
-    return "http://localhost:7000"
 
 
 @app.route("/file/<filename>")
