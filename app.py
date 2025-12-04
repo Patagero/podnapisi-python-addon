@@ -37,41 +37,48 @@ def imdb_to_title(imdb_id):
 
 
 # -----------------------------
-# Search Podnapisi.net
+# Search Podnapisi.net (NEW PARSER)
 # -----------------------------
 def find_subtitles(title):
-    print("🔍 Searching:", title)
+    print("🔍 Searching for:", title)
 
     params = {
         "keywords": title,
         "language": "sl",
-        "sort": "downloads",
+        "sort": "downloads"
     }
 
     r = requests.get(SEARCH_URL, params=params, headers={"User-Agent": "Mozilla/5.0"})
     soup = BeautifulSoup(r.text, "html.parser")
 
-    items = soup.select(".subtitle-entry")
-    out = []
+    results = []
 
-    for item in items:
-        link = item.find("a")
-        if not link:
-            continue
+    # NEW STRUCTURE 1 — table row format
+    rows = soup.select("tr.subtitle-row a[href]")
+    for a in rows:
+        href = a.get("href")
+        if href.startswith("/sl/subtitles/"):
+            results.append({
+                "id": href.split("/")[-1],
+                "url": DETAIL_URL + href,
+                "title": a.get_text(strip=True),
+                "lang": "sl"
+            })
 
-        href = link.get("href")
-        if not href:
-            continue
+    # NEW STRUCTURE 2 — div-based table rows
+    links = soup.select("div.table-row a[href]")
+    for a in links:
+        href = a.get("href")
+        if href.startswith("/sl/subtitles/"):
+            results.append({
+                "id": href.split("/")[-1],
+                "url": DETAIL_URL + href,
+                "title": a.get_text(strip=True),
+                "lang": "sl"
+            })
 
-        out.append({
-            "id": href.split("/")[-1],
-            "url": DETAIL_URL + href,
-            "title": link.text.strip(),
-            "lang": "sl"
-        })
-
-    print("✅ Found:", len(out))
-    return out
+    print(f"✅ Found {len(results)} subtitles")
+    return results
 
 
 # -----------------------------
@@ -107,7 +114,7 @@ def manifest():
     return jsonify({
         "id": "org.formio.podnapisi.python",
         "name": "Podnapisi.NET 🇸🇮 (no-login)",
-        "version": "1.1.0",
+        "version": "1.2.0",
         "description": "Slovenski podnapisi iz Podnapisi.NET brez prijave.",
         "idPrefixes": ["tt"],
         "types": ["movie", "series"],
@@ -129,7 +136,8 @@ def subtitles(type, imdb_id):
     out = []
 
     for s in search_results:
-        srt = download_subtitle(s["url"] + "/download")
+        dl_url = s["url"] + "/download"
+        srt = download_subtitle(dl_url)
         if not srt:
             continue
 
