@@ -21,6 +21,39 @@ CORS(app, resources={r"/*": {"origins": "*"}})
 
 
 # -----------------------------------
+# TMDB: Convert IMDB → Title
+# -----------------------------------
+def imdb_to_title(imdb_id):
+    url = (
+        f"https://api.themoviedb.org/3/find/{imdb_id}"
+        f"?external_source=imdb_id&api_key=730b8680e6fb1d80b3d5bc1a58b2d2f0"
+    )
+
+    print("🔎 TMDB lookup:", url)
+    data = requests.get(url).json()
+
+    # Movie result
+    if data.get("movie_results"):
+        movie = data["movie_results"][0]
+        title = movie.get("title", imdb_id)
+        year = movie.get("release_date", "")[:4]
+        combo = f"{title} {year}".strip()
+        print("🎬 TMDB Title:", combo)
+        return combo
+
+    # TV series result
+    if data.get("tv_results"):
+        tv = data["tv_results"][0]
+        title = tv.get("name", imdb_id)
+        year = tv.get("first_air_date", "")[:4]
+        combo = f"{title} {year}".strip()
+        print("📺 TMDB Series Title:", combo)
+        return combo
+
+    return imdb_id  # fallback
+
+
+# -----------------------------------
 # LOGIN
 # -----------------------------------
 def login_if_needed():
@@ -35,7 +68,7 @@ def login_if_needed():
 
     token = soup.find("input", {"name": "_token"})
     if not token:
-        print("⚠️ Login token not found")
+        print("⚠️ Login token missing")
         return
 
     payload = {
@@ -52,11 +85,14 @@ def login_if_needed():
 # -----------------------------------
 # FIND SUBTITLES
 # -----------------------------------
-def find_subtitles(title):
+def find_subtitles(imdb_id):
     login_if_needed()
 
-    url = SEARCH_URL.format(title)
-    print("🔍 Searching:", url)
+    search_query = imdb_to_title(imdb_id)
+    print("🔍 Searching Podnapisi.NET for:", search_query)
+
+    url = SEARCH_URL.format(search_query)
+    print("🔗 Query URL:", url)
 
     r = session.get(url)
     soup = BeautifulSoup(r.text, "lxml")
@@ -82,37 +118,36 @@ def find_subtitles(title):
 
 
 # -----------------------------------
-# ZIP → SRT
+# ZIP → SRT extract
 # -----------------------------------
 def extract_srt_from_zip(url):
-    print("⬇️ Downloading ZIP:", url)
-
-    r = session.get(url)
-
-    tmp_zip = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")
-    tmp_zip.write(r.content)
-    tmp_zip.close()
-
-    extract_dir = tempfile.mkdtemp()
-
     try:
+        print("⬇️ Downloading ZIP:", url)
+        r = session.get(url)
+
+        tmp_zip = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")
+        tmp_zip.write(r.content)
+        tmp_zip.close()
+
+        extract_dir = tempfile.mkdtemp()
+
         with zipfile.ZipFile(tmp_zip.name, "r") as z:
             z.extractall(extract_dir)
-    except Exception as e:
-        print("⚠️ Zip error:", e)
+
+        for file in os.listdir(extract_dir):
+            if file.endswith(".srt"):
+                return os.path.join(extract_dir, file)
+
         return None
 
-    for file in os.listdir(extract_dir):
-        if file.endswith(".srt"):
-            return os.path.join(extract_dir, file)
-
-    return None
+    except Exception as e:
+        print("⚠️ ZIP error:", e)
+        return None
 
 
 # -----------------------------------
 # ROUTES
 # -----------------------------------
-
 @app.route("/manifest.json")
 def manifest():
     return jsonify({
@@ -126,23 +161,25 @@ def manifest():
     })
 
 
-# 🔥 Stremio 5 format: /subtitles/movie/tt1234/<filename...>.json
+# Stremio 5 URL format
 @app.route("/subtitles/<stype>/<imdb_id>/<path:rest>.json")
-def subtitles_with_rest(stype, imdb_id, rest):
+def subtitles_rest(stype, imdb_id, rest):
     return subtitles(stype, imdb_id)
 
 
-# 🔥 Stremio 4 format: /subtitles/movie/tt1234.json
+# Stremio 4 URL format
 @app.route("/subtitles/<stype>/<imdb_id>.json")
 def subtitles(stype, imdb_id):
     print("🎬 Request for IMDB:", imdb_id)
 
     results = find_subtitles(imdb_id)
 
-    base = os.getenv("RENDER_EXTERNAL_URL",
-                     f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME', 'podnapisi-python-addon.onrender.com')}")
+    base = os.getenv(
+        "RENDER_EXTERNAL_URL",
+        f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME', 'podnapisi-python-addon.onrender.com')}"
+    )
 
-    subtitles = []
+    out = []
     idx = 1
 
     for r in results:
@@ -153,32 +190,31 @@ def subtitles(stype, imdb_id):
         fname = os.path.basename(srt)
         url = f"{base}/file/{fname}"
 
-        subtitles.append({
+        out.append({
             "id": f"srt-{idx}",
             "lang": "sl",
-            "url": url,
-            "title": f"🇸🇮 {r['title']}"
+            "title": f"🇸🇮 {r['title']}",
+            "url": url
         })
         idx += 1
 
-    return jsonify({"subtitles": subtitles})
+    return jsonify({"subtitles": out})
 
 
 @app.route("/file/<filename>")
-def serve_file(filename):
-    temp_dir = tempfile.gettempdir()
+def serve_srt(filename):
+    tmp = tempfile.gettempdir()
 
-    for root, dirs, files in os.walk(temp_dir):
+    for root, dirs, files in os.walk(tmp):
         if filename in files:
             return send_file(os.path.join(root, filename), as_attachment=False)
 
-    return "Not Found", 404
+    return "Not found", 404
 
 
 # -----------------------------------
-# RUN (REQUIRED FOR RENDER)
+# RUN SERVER
 # -----------------------------------
-
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 7000))
     print(f"🚀 Starting Flask on 0.0.0.0:{port}")
