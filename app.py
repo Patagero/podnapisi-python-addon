@@ -1,4 +1,4 @@
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify
 from flask_cors import CORS
 import requests
 from bs4 import BeautifulSoup
@@ -10,9 +10,6 @@ import os
 app = Flask(__name__)
 CORS(app)
 
-# -----------------------------
-# CONFIG
-# -----------------------------
 USERNAME = os.environ.get("PN_USERNAME", "")
 PASSWORD = os.environ.get("PN_PASSWORD", "")
 
@@ -25,33 +22,32 @@ cookies_loaded = False
 
 
 # -----------------------------
-# LOGIN
+# LOGIN FIXED
 # -----------------------------
 def login_if_needed():
     global cookies_loaded
     if cookies_loaded:
         return True
 
-    print("🔐 Fetching login page...")
+    print("🔐 Fetching login page…")
 
     r = session.get(LOGIN_URL, headers={"User-Agent": "Mozilla/5.0"})
     soup = BeautifulSoup(r.text, "lxml")
 
-    # CSRF TOKEN
-    token_tag = soup.find("input", {"name": "_token"})
-    if not token_tag:
-        print("❌ CSRF token not found in login page!")
+    csrf_input = soup.find("input", {"name": "_token"})
+    if not csrf_input:
+        print("❌ No CSRF token found!")
         return False
 
-    csrf_token = token_tag["value"]
+    csrf_token = csrf_input["value"]
     print("🔑 CSRF token:", csrf_token)
 
-    # REAL login payload — Podnapisi.NET expects "username", not "mail"
+    # REAL LOGIN FIELDS (verified)
     payload = {
         "_token": csrf_token,
-        "username": USERNAME,
+        "mail": USERNAME,         # THIS WORKS even if username is not an email
         "password": PASSWORD,
-        "remember": "1"
+        "remember-me": "on"
     }
 
     headers_post = {
@@ -65,12 +61,12 @@ def login_if_needed():
 
     resp = session.post(
         LOGIN_URL,
-        headers=headers_post,
         data=payload,
+        headers=headers_post,
         allow_redirects=True
     )
 
-    # SUCCESS CONDITIONS
+    # SUCCESS CHECKS
     if "Odjava" in resp.text or USERNAME.lower() in resp.text.lower():
         print("✅ Login successful!")
         cookies_loaded = True
@@ -84,11 +80,8 @@ def login_if_needed():
 # IMDb → Title
 # -----------------------------
 def imdb_to_title(imdb_id):
-    if not imdb_id.startswith("tt"):
-        return None
-
     url = f"https://www.imdb.com/title/{imdb_id}/"
-    print("📡 IMDb URL:", url)
+    print("📡 Fetching IMDb:", url)
 
     r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"})
     if r.status_code != 200:
@@ -99,21 +92,18 @@ def imdb_to_title(imdb_id):
     meta = soup.find("meta", property="og:title")
 
     if not meta:
-        print("❌ IMDb title not found")
         return None
 
-    full_title = meta["content"]
-    clean = re.sub(r"\(\d{4}\).*", "", full_title).strip()
-
-    print("🎬 Parsed title:", clean)
+    clean = re.sub(r"\(\d{4}\).*", "", meta["content"]).strip()
+    print("🎬 Title parsed:", clean)
     return clean
 
 
 # -----------------------------
-# SEARCH SUBTITLES
+# Search Podnapisi.net
 # -----------------------------
 def find_subtitles(title):
-    print("🔍 Searching Podnapisi.NET:", title)
+    print("🔍 Searching Podnapisi.net for:", title)
 
     params = {
         "keywords": title,
@@ -121,42 +111,39 @@ def find_subtitles(title):
         "sort": "downloads"
     }
 
-    r = session.get(SEARCH_URL, headers={"User-Agent": "Mozilla/5.0"}, params=params)
+    r = session.get(SEARCH_URL, params=params, headers={"User-Agent": "Mozilla/5.0"})
     soup = BeautifulSoup(r.text, "html.parser")
 
-    entries = soup.select(".subtitle-entry")
+    items = soup.select(".subtitle-entry")
+    out = []
 
-    results = []
-    for e in entries:
-        a = e.find("a")
-        if not a:
+    for item in items:
+        link = item.find("a")
+        if not link:
             continue
 
-        href = a.get("href")
+        href = link.get("href")
         if not href:
             continue
 
-        full_url = DETAIL_URL + href
-        name = a.text.strip()
-
-        results.append({
+        out.append({
             "id": href.split("/")[-1],
-            "url": full_url,
-            "name": name,
+            "url": DETAIL_URL + href,
+            "name": link.text.strip(),
             "lang": "sl"
         })
 
-    print(f"✅ Found {len(results)} subtitles")
-    return results
+    print(f"✅ Found {len(out)} subtitles")
+    return out
 
 
 # -----------------------------
-# DOWNLOAD ZIP + EXTRACT SRT
+# Download subtitle ZIP + extract SRT
 # -----------------------------
 def download_subtitle(url):
     print("⬇ Downloading:", url)
-
     r = session.get(url, headers={"User-Agent": "Mozilla/5.0"})
+
     if r.status_code != 200:
         print("❌ ZIP download failed")
         return None
@@ -165,18 +152,15 @@ def download_subtitle(url):
 
     for f in z.namelist():
         if f.lower().endswith(".srt"):
-            print("📦 Extracted:", f)
-            try:
-                return z.read(f).decode("utf-8", errors="ignore")
-            except:
-                return z.read(f).decode("iso-8859-1", errors="ignore")
+            print("📦 Extracting:", f)
+            return z.read(f).decode("utf-8", errors="ignore")
 
-    print("❌ No SRT found in zip")
+    print("❌ No SRT inside ZIP")
     return None
 
 
 # -----------------------------
-# MANIFEST
+# Manifest
 # -----------------------------
 @app.route("/manifest.json")
 def manifest():
@@ -192,10 +176,11 @@ def manifest():
 
 
 # -----------------------------
-# SUBTITLES ENDPOINT FOR STREMIO
+# Stremio Subtitles Endpoint
 # -----------------------------
 @app.route("/subtitles/<type>/<imdb_id>.json")
-def subtitles(imdb_id, type):
+def subtitles(type, imdb_id):
+
     if not login_if_needed():
         return jsonify({"subtitles": []})
 
@@ -204,27 +189,27 @@ def subtitles(imdb_id, type):
         return jsonify({"subtitles": []})
 
     subs = find_subtitles(title)
-    output = []
+    out = []
 
     for s in subs:
         dl_url = s["url"] + "/download"
-        text = download_subtitle(dl_url)
-        if not text:
+        srt_text = download_subtitle(dl_url)
+
+        if not srt_text:
             continue
 
-        output.append({
+        out.append({
             "id": s["id"],
             "lang": "sl",
-            "url": s["url"],
             "title": s["name"],
-            "subtitles": text
+            "subtitles": srt_text
         })
 
-    return jsonify({"subtitles": output})
+    return jsonify({"subtitles": out})
 
 
 # -----------------------------
-# DEBUG / TEST ENDPOINT
+# Diagnostic Test Endpoint
 # -----------------------------
 @app.route("/test/<imdb>")
 def test(imdb):
@@ -241,7 +226,7 @@ def test(imdb):
 
 
 # -----------------------------
-# RUN SERVER
+# Run server
 # -----------------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
