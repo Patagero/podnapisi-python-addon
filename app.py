@@ -5,11 +5,7 @@ import zipfile
 import tempfile
 from flask import Flask, jsonify, send_file
 from bs4 import BeautifulSoup
-from flask_cors import CORS   # 🔥 DODANO – CORS FIX
-
-# -----------------------------------
-# CONFIG
-# -----------------------------------
+from flask_cors import CORS
 
 USERNAME = os.getenv("PODNAPISI_USER", "")
 PASSWORD = os.getenv("PODNAPISI_PASS", "")
@@ -21,13 +17,12 @@ session = requests.Session()
 cookies_loaded = False
 
 app = Flask(__name__)
-CORS(app, resources={r"/*": {"origins": "*"}})  # 🔥 STREMIO FIX
+CORS(app, resources={r"/*": {"origins": "*"}})
 
 
 # -----------------------------------
 # LOGIN
 # -----------------------------------
-
 def login_if_needed():
     global cookies_loaded
     if cookies_loaded:
@@ -57,7 +52,6 @@ def login_if_needed():
 # -----------------------------------
 # FIND SUBTITLES
 # -----------------------------------
-
 def find_subtitles(title):
     login_if_needed()
 
@@ -90,7 +84,6 @@ def find_subtitles(title):
 # -----------------------------------
 # ZIP → SRT
 # -----------------------------------
-
 def extract_srt_from_zip(url):
     print("⬇️ Downloading ZIP:", url)
 
@@ -133,13 +126,21 @@ def manifest():
     })
 
 
+# 🔥 Stremio 5 format: /subtitles/movie/tt1234/<filename...>.json
+@app.route("/subtitles/<stype>/<imdb_id>/<path:rest>.json")
+def subtitles_with_rest(stype, imdb_id, rest):
+    return subtitles(stype, imdb_id)
+
+
+# 🔥 Stremio 4 format: /subtitles/movie/tt1234.json
 @app.route("/subtitles/<stype>/<imdb_id>.json")
 def subtitles(stype, imdb_id):
-    print("🎬 Request:", imdb_id)
+    print("🎬 Request for IMDB:", imdb_id)
 
     results = find_subtitles(imdb_id)
 
-    base = os.getenv("RENDER_EXTERNAL_URL", f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME', 'podnapisi-python-addon.onrender.com')}")
+    base = os.getenv("RENDER_EXTERNAL_URL",
+                     f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME', 'podnapisi-python-addon.onrender.com')}")
 
     subtitles = []
     idx = 1
