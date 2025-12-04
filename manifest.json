@@ -1,0 +1,9 @@
+{
+  "id": "org.formio.podnapisi.python",
+  "version": "1.0.0",
+  "name": "Podnapisi.NET 🇸🇮 Python Addon",
+  "description": "Slovenski podnapisi iz Podnapisi.NET (Python, brez Chromium).",
+  "types": ["movie", "series"],
+  "resources": ["subtitles"],
+  "idPrefixes": ["tt"]
+}
