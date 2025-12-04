@@ -6,9 +6,9 @@ import tempfile
 from flask import Flask, jsonify, send_file
 from bs4 import BeautifulSoup
 
-# --------------------------
+# -----------------------------------
 # CONFIG
-# --------------------------
+# -----------------------------------
 
 USERNAME = os.getenv("PODNAPISI_USER", "")
 PASSWORD = os.getenv("PODNAPISI_PASS", "")
@@ -22,12 +22,11 @@ cookies_loaded = False
 app = Flask(__name__)
 
 
-# --------------------------
-# LOGIN HANDLER
-# --------------------------
+# -----------------------------------
+# LOGIN
+# -----------------------------------
 
 def login_if_needed():
-    """Ensures we are logged in at Podnapisi.NET"""
     global cookies_loaded
     if cookies_loaded:
         return
@@ -39,7 +38,7 @@ def login_if_needed():
 
     token = soup.find("input", {"name": "_token"})
     if not token:
-        print("⚠️ Token missing — login may fail.")
+        print("⚠️ Login token not found")
         return
 
     payload = {
@@ -50,14 +49,14 @@ def login_if_needed():
 
     session.post(LOGIN_URL, data=payload)
     cookies_loaded = True
-    print("✅ Login done.")
+    print("✅ Login OK")
 
 
-# --------------------------
-# SCRAPING SUBTITLES
-# --------------------------
+# -----------------------------------
+# FIND SUBTITLES
+# -----------------------------------
 
-def find_subtitles(title: str):
+def find_subtitles(title):
     login_if_needed()
 
     url = SEARCH_URL.format(title)
@@ -71,32 +70,30 @@ def find_subtitles(title: str):
 
     for row in rows:
         a = row.find("a", href=True)
-        if not a:
+        if not a or "/download" not in a["href"]:
             continue
 
-        if "/download" not in a["href"]:
-            continue
-
-        full_link = "https://www.podnapisi.net" + a["href"]
+        full = "https://www.podnapisi.net" + a["href"]
         name = a.text.strip()
 
         results.append({
             "title": name,
-            "link": full_link
+            "link": full
         })
 
     print(f"✅ Found {len(results)} subtitles")
     return results
 
 
-# --------------------------
-# ZIP → SRT extraction
-# --------------------------
+# -----------------------------------
+# ZIP → SRT
+# -----------------------------------
 
 def extract_srt_from_zip(url):
     print("⬇️ Downloading ZIP:", url)
 
     r = session.get(url)
+
     tmp_zip = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")
     tmp_zip.write(r.content)
     tmp_zip.close()
@@ -106,52 +103,58 @@ def extract_srt_from_zip(url):
     try:
         with zipfile.ZipFile(tmp_zip.name, "r") as z:
             z.extractall(extract_dir)
-    except:
-        print("⚠️ Failed to extract ZIP")
+    except Exception as e:
+        print("⚠️ Zip error:", e)
+        return None
 
-    for f in os.listdir(extract_dir):
-        if f.endswith(".srt"):
-            srt_path = os.path.join(extract_dir, f)
-            print("📜 Extracted SRT:", srt_path)
-            return srt_path
+    for file in os.listdir(extract_dir):
+        if file.endswith(".srt"):
+            return os.path.join(extract_dir, file)
 
     return None
 
 
-# --------------------------
-# STREMIO ROUTES
-# --------------------------
+# -----------------------------------
+# ROUTES
+# -----------------------------------
 
 @app.route("/manifest.json")
 def manifest():
-    with open("manifest.json", "r", encoding="utf8") as f:
-        return jsonify(json.load(f))
+    return jsonify({
+        "id": "org.formio.podnapisi.python",
+        "version": "1.0.0",
+        "name": "Podnapisi.NET 🇸🇮 Python Addon",
+        "description": "Slovenski podnapisi iz Podnapisi.NET (Python brez Chromium).",
+        "types": ["movie", "series"],
+        "resources": ["subtitles"],
+        "idPrefixes": ["tt"]
+    })
 
 
 @app.route("/subtitles/<type>/<imdb>.json")
 def subtitles(type, imdb):
     print("🎬 Request:", imdb)
 
-    title = imdb  # direct match, no OMDB needed
+    title = imdb
     results = find_subtitles(title)
+
+    base_url = os.getenv("RENDER_EXTERNAL_URL", request_url())
 
     subtitles = []
     idx = 1
-
-    base_url = os.getenv("RENDER_EXTERNAL_URL", "http://localhost:7000")
 
     for r in results:
         srt = extract_srt_from_zip(r["link"])
         if not srt:
             continue
 
-        filename = os.path.basename(srt)
-        serve_url = f"{base_url}/file/{filename}"
+        fname = os.path.basename(srt)
+        url = f"{base_url}/file/{fname}"
 
         subtitles.append({
             "id": f"srt-{idx}",
             "lang": "sl",
-            "url": serve_url,
+            "url": url,
             "title": f"🇸🇮 {r['title']}"
         })
         idx += 1
@@ -159,20 +162,30 @@ def subtitles(type, imdb):
     return jsonify({"subtitles": subtitles})
 
 
+def request_url():
+    # Render sets X-Forwarded-Proto and Host correctly
+    proto = os.getenv("RENDER_EXTERNAL_URL", "")
+    if proto:
+        return proto
+    return "http://localhost:7000"
+
+
 @app.route("/file/<filename>")
 def serve_file(filename):
-    tmp_match = []
-    for root, dirs, files in os.walk(tempfile.gettempdir()):
+    temp_dir = tempfile.gettempdir()
+
+    for root, dirs, files in os.walk(temp_dir):
         if filename in files:
             return send_file(os.path.join(root, filename), as_attachment=False)
 
     return "Not Found", 404
 
 
-# --------------------------
-# RUN
-# --------------------------
+# -----------------------------------
+# RUN (REQUIRED FOR RENDER)
+# -----------------------------------
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 7000))
+    print(f"🚀 Starting Flask on 0.0.0.0:{port}")
     app.run(host="0.0.0.0", port=port)
