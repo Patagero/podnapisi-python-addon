@@ -53,7 +53,7 @@ def login_if_needed():
 
     payload = {
         "_token": csrf_token,
-        "mail": USERNAME,      # <-- PRAVILNO
+        "mail": USERNAME,
         "password": PASSWORD,
     }
 
@@ -196,10 +196,10 @@ def manifest():
 
 
 # -----------------------------
-# SUBTITLES ENDPOINT
+# SUBTITLES ENDPOINT (FIXED)
 # -----------------------------
-@app.route("/subtitles/<type>/<imdb_id>/<extra>.json")
-def subtitles(type, imdb_id, extra):
+@app.route("/subtitles/<type>/<imdb_id>.json")
+def subtitles(type, imdb_id):
 
     if not login_if_needed():
         return jsonify({"subtitles": []})
