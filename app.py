@@ -53,7 +53,7 @@ def login_if_needed():
 
     payload = {
         "_token": csrf_token,
-        "mail": USERNAME,
+        "mail": USERNAME,  
         "password": PASSWORD,
     }
 
@@ -73,6 +73,7 @@ def login_if_needed():
         allow_redirects=True
     )
 
+    # SUCCESS INDICATORS
     if "Odjava" in resp.text or USERNAME.lower() in resp.text.lower():
         print("✅ Login successful")
         cookies_loaded = True
@@ -86,11 +87,9 @@ def login_if_needed():
 # IMDb → TITLE
 # -----------------------------
 def imdb_to_title(imdb_id):
-    if imdb_id.startswith("tt"):
-        url = f"https://www.imdb.com/title/{imdb_id}/"
-    else:
-        return None
+    imdb_id = imdb_id.replace(".json", "")  # FIX
 
+    url = f"https://www.imdb.com/title/{imdb_id}/"
     print("📡 Fetching IMDb:", url)
 
     r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"})
@@ -130,11 +129,11 @@ def find_subtitles(title):
     }
 
     r = session.get(SEARCH_URL, headers=headers, params=params)
-
     soup = BeautifulSoup(r.text, "html.parser")
-    results = soup.select(".subtitle-entry")
 
+    results = soup.select(".subtitle-entry")
     out = []
+
     for item in results:
         link = item.find("a")
         if not link:
@@ -175,7 +174,7 @@ def download_subtitle(url):
             print("📦 Extracted:", file)
             return z.read(file).decode("utf-8", errors="ignore")
 
-    print("❌ No SRT found in zip")
+    print("❌ No SRT found in ZIP")
     return None
 
 
@@ -196,10 +195,13 @@ def manifest():
 
 
 # -----------------------------
-# SUBTITLES ENDPOINT (FIXED)
+# SUBTITLES ENDPOINT — FINAL FIXED VERSION
 # -----------------------------
 @app.route("/subtitles/<type>/<imdb_id>.json")
 def subtitles(type, imdb_id):
+
+    imdb_id = imdb_id.replace(".json", "")  # CRUCIAL FIX
+    print("🎬 Received IMDb ID:", imdb_id)
 
     if not login_if_needed():
         return jsonify({"subtitles": []})
@@ -222,8 +224,8 @@ def subtitles(type, imdb_id):
             "id": s["id"],
             "url": s["url"],
             "lang": "sl",
-            "subtitles": text,
             "title": s["name"],
+            "subtitles": text
         })
 
     return jsonify({"subtitles": out})
