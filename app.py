@@ -53,7 +53,7 @@ def login_if_needed():
 
     payload = {
         "_token": csrf_token,
-        "mail": USERNAME,  
+        "mail": USERNAME,
         "password": PASSWORD,
     }
 
@@ -73,7 +73,6 @@ def login_if_needed():
         allow_redirects=True
     )
 
-    # SUCCESS INDICATORS
     if "Odjava" in resp.text or USERNAME.lower() in resp.text.lower():
         print("✅ Login successful")
         cookies_loaded = True
@@ -87,7 +86,7 @@ def login_if_needed():
 # IMDb → TITLE
 # -----------------------------
 def imdb_to_title(imdb_id):
-    imdb_id = imdb_id.replace(".json", "")  # FIX
+    imdb_id = imdb_id.replace(".json", "")
 
     url = f"https://www.imdb.com/title/{imdb_id}/"
     print("📡 Fetching IMDb:", url)
@@ -195,18 +194,19 @@ def manifest():
 
 
 # -----------------------------
-# SUBTITLES ENDPOINT — FINAL FIXED VERSION
+# SUBTITLES ENDPOINT — FIXED
 # -----------------------------
 @app.route("/subtitles/<type>/<imdb_id>.json")
 def subtitles(type, imdb_id):
 
-    imdb_id = imdb_id.replace(".json", "")  # CRUCIAL FIX
+    imdb_id = imdb_id.replace(".json", "")
     print("🎬 Received IMDb ID:", imdb_id)
 
     if not login_if_needed():
         return jsonify({"subtitles": []})
 
     title = imdb_to_title(imdb_id)
+    print("TITLE RESOLVED =", title)
     if not title:
         return jsonify({"subtitles": []})
 
@@ -229,6 +229,32 @@ def subtitles(type, imdb_id):
         })
 
     return jsonify({"subtitles": out})
+
+
+# -----------------------------
+# DEBUG TEST ROUTE
+# -----------------------------
+@app.route("/test/<imdb_id>")
+def test(imdb_id):
+
+    imdb_clean = imdb_id.replace(".json", "")
+    print("TEST: IMDb ID =", imdb_clean)
+
+    login_ok = login_if_needed()
+    print("LOGIN OK =", login_ok)
+
+    title = imdb_to_title(imdb_clean)
+    print("TITLE :", title)
+
+    results = find_subtitles(title) if title else []
+    print("FOUND =", len(results))
+
+    return jsonify({
+        "imdb": imdb_clean,
+        "login_success": login_ok,
+        "title": title,
+        "results_found": len(results)
+    })
 
 
 # -----------------------------
