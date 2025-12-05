@@ -12,9 +12,10 @@ CORS(app)
 BASE = "https://www.podnapisi.net"
 
 # -------------------------------------
-# REAL CHROME SIMULATION HEADERS
+# Chrome-like headers (BREZ fejk Cloudflare cookie)
 # -------------------------------------
-HEADERS = {
+SESSION = requests.Session()
+SESSION.headers.update({
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -26,69 +27,58 @@ HEADERS = {
     ),
     "Accept-Language": "sl,en-US;q=0.9,en;q=0.8",
     "Accept-Encoding": "gzip, deflate, br",
-    "Cache-Control": "no-cache",
-    "Pragma": "no-cache",
     "Connection": "keep-alive",
     "Upgrade-Insecure-Requests": "1",
     "DNT": "1",
-    "sec-fetch-dest": "document",
-    "sec-fetch-mode": "navigate",
-    "sec-fetch-site": "none",
-    "sec-fetch-user": "?1",
-    "Referer": "https://www.podnapisi.net/",
-}
-
-# FAKE COOKIE (important for bypass!)
-COOKIES = {
-    "cf_clearance": "fakeclearance1234567890",
-    "PNSESSID": "fake_session_ABC123XYZ"
-}
-
-session = requests.Session()
-session.headers.update(HEADERS)
+})
 
 
 # -------------------------------------
 # IMDb → Title
 # -------------------------------------
-def imdb_to_title(imdb):
-    url = f"https://www.imdb.com/title/{imdb}/"
-    r = session.get(url)
+def imdb_to_title(imdb_id: str) -> str | None:
+    url = f"https://www.imdb.com/title/{imdb_id}/"
+    print("🎬 IMDb URL:", url)
+    r = SESSION.get(url, timeout=10)
 
     if r.status_code != 200:
-        print("IMDb error:", r.status_code)
+        print("❌ IMDb status:", r.status_code)
         return None
 
     soup = BeautifulSoup(r.text, "html.parser")
     tag = soup.find("meta", {"property": "og:title"})
-    if not tag:
+    if not tag or "content" not in tag.attrs:
+        print("❌ IMDb meta og:title not found")
         return None
 
-    clean = re.sub(r"\(\d{4}\).*", "", tag["content"]).strip()
-    print("IMDb title:", clean)
+    full = tag["content"]
+    clean = re.sub(r"\(\d{4}\).*", "", full).strip()
+    print("✅ IMDb title:", clean)
     return clean
 
 
 # -------------------------------------
-# Search (FILMI + SERIJE)
+# Search subtitles (movies + series)
 # -------------------------------------
-def search_subtitles(title):
+def search_subtitles(title: str):
     url = f"{BASE}/sl/subtitles/search"
     params = {
         "keywords": title,
         "language": "sl",
-        "sort": "downloads"
+        "sort": "downloads",
     }
 
-    print("Searching:", url, params)
+    print("🔍 Searching Podnapisi:", url, params)
+    r = SESSION.get(url, params=params, timeout=15)
 
-    r = session.get(url, params=params, cookies=COOKIES)
-
+    print("🔍 Search status:", r.status_code)
     if r.status_code != 200:
-        print("Search failed:", r.status_code)
         return []
 
     soup = BeautifulSoup(r.text, "html.parser")
+
+    # DEBUG: pokaži prvih par znakov HTML (za loge na Renderju)
+    print("🔍 HTML preview:", r.text[:400].replace("\n", " ")[:400])
 
     rows = soup.select("table tbody tr")
     results = []
@@ -98,41 +88,46 @@ def search_subtitles(title):
         if not a:
             continue
 
-        name = a.text.strip()
-        href = a["href"]
+        name = a.get_text(strip=True)
+        href = a.get("href")
+        if not href:
+            continue
 
-        dl = BASE + href + "/download"
+        dl_url = BASE + href + "/download"
 
         results.append({
             "name": name,
-            "url": dl
+            "url": dl_url,
         })
 
-    print("Found:", len(results))
+    print(f"✅ Found {len(results)} subtitle entries")
     return results
 
 
 # -------------------------------------
-# Download + extract .srt
+# Download ZIP → extract SRT
 # -------------------------------------
-def download_srt(url):
-    print("Downloading:", url)
-    r = session.get(url, cookies=COOKIES)
+def download_srt(url: str) -> str | None:
+    print("⬇ Downloading subtitle ZIP:", url)
+    r = SESSION.get(url, timeout=20)
 
     if r.status_code != 200:
-        print("DL error:", r.status_code)
+        print("❌ ZIP status:", r.status_code)
         return None
 
     try:
         z = zipfile.ZipFile(io.BytesIO(r.content))
-        for file in z.namelist():
-            if file.lower().endswith(".srt"):
-                print("Extract:", file)
-                return z.read(file).decode("utf-8", errors="ignore")
+        for fname in z.namelist():
+            if fname.lower().endswith(".srt"):
+                print("📦 Extracting SRT:", fname)
+                try:
+                    return z.read(fname).decode("utf-8", errors="ignore")
+                except UnicodeDecodeError:
+                    return z.read(fname).decode("iso-8859-1", errors="ignore")
     except Exception as e:
-        print("ZIP error:", e)
-        return None
+        print("❌ ZIP error:", e)
 
+    print("❌ No .srt file found in ZIP")
     return None
 
 
@@ -142,45 +137,53 @@ def download_srt(url):
 @app.route("/manifest.json")
 def manifest():
     return jsonify({
-        "id": "org.formio.podnapisi.python.chrome",
-        "version": "5.0.0",
-        "name": "Podnapisi.NET 🇸🇮 Python Addon (Chrome Simulation)",
-        "description": "Brez browserja, filmi + serije, full anti-bot bypass.",
+        "id": "org.formio.podnapisi.python",
+        "version": "6.0.0",
+        "name": "Podnapisi.NET 🇸🇮 Python Addon (no browser)",
+        "description": "Slovenski podnapisi (filmi + serije) preko Podnapisi.NET, brez browserja.",
         "idPrefixes": ["tt"],
         "types": ["movie", "series"],
-        "resources": ["subtitles"]
+        "resources": ["subtitles"],
     })
 
 
 # -------------------------------------
-# Subtitles
+# Subtitles endpoint
 # -------------------------------------
-@app.route("/subtitles/<type>/<imdb>.json")
-def subtitles(type, imdb):
-    title = imdb_to_title(imdb)
+@app.route("/subtitles/<video_type>/<imdb_id>.json")
+def subtitles(video_type: str, imdb_id: str):
+    print("==================================================")
+    print("🎬 Request for:", video_type, imdb_id)
+
+    title = imdb_to_title(imdb_id)
     if not title:
+        print("❌ No title from IMDb")
         return jsonify({"subtitles": []})
 
-    subs = search_subtitles(title)
-    out = []
+    results = search_subtitles(title)
+    if not results:
+        print("❌ No results from Podnapisi search")
+        return jsonify({"subtitles": []})
 
-    for s in subs:
-        text = download_srt(s["url"])
-        if not text:
+    out = []
+    for r in results:
+        srt = download_srt(r["url"])
+        if not srt:
             continue
 
         out.append({
-            "id": s["name"],
+            "id": r["name"],
             "lang": "sl",
-            "title": s["name"],
-            "subtitles": text
+            "title": r["name"],
+            "subtitles": srt,
         })
 
+    print("✅ Returning", len(out), "subtitles")
     return jsonify({"subtitles": out})
 
 
 # -------------------------------------
-# RUN SERVER
+# Run server (Render)
 # -------------------------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
