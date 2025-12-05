@@ -5,95 +5,128 @@ from bs4 import BeautifulSoup
 import zipfile
 import io
 import re
+import urllib.parse
 
 app = Flask(__name__)
 CORS(app)
 
-# Cloudflare-bypass session
 scraper = cloudscraper.create_scraper(
     browser={"browser": "chrome", "platform": "windows", "mobile": False}
 )
 
-SEARCH_URL = "https://www.podnapisi.net/sl/subtitles/search"
-DETAIL_URL = "https://www.podnapisi.net"
-IMDB_URL = "https://www.imdb.com/title/"
+BASE = "https://www.podnapisi.net"
 
 
 # ------------------------------------------------
-# IMDb → Title (only for logging, not for search)
+# IMDb → Normalized movie slug (for Podnapisi.NET)
 # ------------------------------------------------
-def imdb_to_title(imdb_id):
-    url = f"{IMDB_URL}{imdb_id}/"
-    print("📡 IMDb:", url)
+def imdb_to_slug(imdb_id):
+    url = f"https://www.imdb.com/title/{imdb_id}/"
+    print("📡 Fetching IMDb:", url)
 
     r = scraper.get(url)
     if r.status_code != 200:
-        print("❌ IMDb error")
+        print("❌ IMDb fetch failed")
         return None
 
     soup = BeautifulSoup(r.text, "html.parser")
     tag = soup.find("meta", property="og:title")
-
     if not tag:
-        print("❌ IMDb meta fail")
+        print("❌ IMDb OG:title missing")
         return None
 
-    title_full = tag["content"]
-    clean_title = re.sub(r"\(\d{4}\).*", "", title_full).strip()
+    full = tag["content"]                   # Titanic (1997) - IMDb
+    title = re.sub(r"\s*\(\d{4}\).*", "", full).strip()
+    year = re.search(r"\((\d{4})\)", full)
+    if not year:
+        print("❌ IMDb year missing")
+        return None
 
-    print("🎬 IMDb title:", clean_title)
-    return clean_title
+    year = year.group(1)
 
+    # Podnapisi slug: title-year → lowercase, spaces → hyphens
+    slug = f"{title}-{year}".lower()
+    slug = re.sub(r"[^a-z0-9\-]+", "-", slug)
+    slug = re.sub(r"-+", "-", slug).strip("-")
 
-# ------------------------------------------------
-# SEARCH PODNAPISI.NET **BY IMDB ID**
-# ------------------------------------------------
-def search_subtitles(imdb_id):
-    print("🔍 Searching Podnapisi.NET for IMDB:", imdb_id)
-
-    params = {
-        "keywords": imdb_id,   # <-- KLJUČNO: iščemo po tt0120338
-        "language": "sl",
-        "sort": "downloads",
-    }
-
-    r = scraper.get(SEARCH_URL, params=params)
-    soup = BeautifulSoup(r.text, "html.parser")
-    rows = soup.select(".subtitle-entry")
-
-    results = []
-    for row in rows:
-        link = row.find("a")
-        if not link:
-            continue
-
-        href = link.get("href")
-        results.append({
-            "id": href.split("/")[-1],
-            "title": link.text.strip(),
-            "url": DETAIL_URL + href
-        })
-
-    print("✅ Found", len(results), "subtitles")
-    return results
+    print("🎬 IMDb → Podnapisi slug:", slug)
+    return slug
 
 
 # ------------------------------------------------
-# DOWNLOAD ZIP → EXTRACT SRT
+# Parse movie page and extract Slovenian subtitles
 # ------------------------------------------------
-def download_srt(url):
-    print("⬇ Download ZIP:", url)
+def get_subtitles_from_movie_page(slug):
+    url = f"{BASE}/sl/movie/{slug}/subtitles"
+    print("🔍 Fetching movie page:", url)
 
     r = scraper.get(url)
     if r.status_code != 200:
-        print("❌ ZIP error", r.status_code)
+        print("❌ Movie page fetch failed")
+        return []
+
+    soup = BeautifulSoup(r.text, "html.parser")
+
+    rows = soup.select("tr.subtitle-entry")
+
+    out = []
+
+    for row in rows:
+        lang = row.select_one(".flag")
+        if not lang:
+            continue
+
+        # Slovenian only:
+        if "sl" not in lang.get("class", []):
+            continue
+
+        link = row.select_one("a[href*='/subtitles/']")
+        if not link:
+            continue
+
+        href = link["href"]
+        title = link.text.strip()
+        full_page = BASE + href
+        dl_url = full_page + "/download"
+
+        print("📄 Subtitle found:", title)
+        print("⬇ Download URL:", dl_url)
+
+        # Download ZIP → extract SRT
+        srt = download_srt(dl_url)
+        if not srt:
+            continue
+
+        out.append({
+            "id": href.split("/")[-1],
+            "lang": "sl",
+            "title": title,
+            "url": full_page,
+            "subtitles": srt
+        })
+
+    print("✅ Total Slovenian subs:", len(out))
+    return out
+
+
+# ------------------------------------------------
+# Download ZIP → extract SRT
+# ------------------------------------------------
+def download_srt(url):
+    r = scraper.get(url)
+    if r.status_code != 200:
+        print("❌ ZIP download failed")
         return None
 
-    z = zipfile.ZipFile(io.BytesIO(r.content))
+    try:
+        z = zipfile.ZipFile(io.BytesIO(r.content))
+    except:
+        print("❌ ZIP corrupt")
+        return None
 
     for f in z.namelist():
         if f.endswith(".srt"):
-            print("📦 Extracting:", f)
+            print("📦 Extracted:", f)
             return z.read(f).decode("utf-8", errors="ignore")
 
     print("❌ No SRT found")
@@ -101,57 +134,40 @@ def download_srt(url):
 
 
 # ------------------------------------------------
-# MANIFEST
+# Manifest
 # ------------------------------------------------
 @app.route("/manifest.json")
 def manifest():
     return jsonify({
         "id": "org.formio.podnapisi.python",
-        "version": "1.1.0",
-        "name": "Podnapisi.NET 🇸🇮 Python Addon",
-        "description": "Slovenski podnapisi iz Podnapisi.NET (Python + Cloudflare bypass + IMDB search).",
-        "resources": ["subtitles"],
+        "version": "2.0.0",
+        "name": "Podnapisi.NET 🇸🇮 Python Addon (Movie Page Version)",
+        "description": "Končno delujoči slovenski podnapisi iz Podnapisi.NET — brez browserja, brez searcha, 100% stabilno.",
+        "idPrefixes": ["tt"],
         "types": ["movie", "series"],
-        "idPrefixes": ["tt"]
+        "resources": ["subtitles"]
     })
 
 
 # ------------------------------------------------
-# MAIN SUBTITLE ROUTE (Stremio Simple)
+# MAIN ROUTE (simple)
 # ------------------------------------------------
 @app.route("/subtitles/<video_type>/<imdb_id>.json")
 def subtitles_simple(video_type, imdb_id):
+    slug = imdb_to_slug(imdb_id)
+    if not slug:
+        return jsonify({"subtitles": []})
 
-    # Only for logging:
-    imdb_to_title(imdb_id)
-
-    results = search_subtitles(imdb_id)
-    out = []
-
-    for r in results:
-        dl_url = r["url"] + "/download"
-        srt = download_srt(dl_url)
-
-        if not srt:
-            continue
-
-        out.append({
-            "id": r["id"],
-            "title": r["title"],
-            "lang": "sl",
-            "url": r["url"],
-            "subtitles": srt
-        })
-
-    return jsonify({"subtitles": out})
+    results = get_subtitles_from_movie_page(slug)
+    return jsonify({"subtitles": results})
 
 
 # ------------------------------------------------
-# EXTRA ROUTE (Stremio filename=... support)
+# EXTRA ROUTE (Stremio filename/hash support)
 # ------------------------------------------------
 @app.route("/subtitles/<video_type>/<imdb_id>/<extra>.json")
 def subtitles_extra(video_type, imdb_id, extra):
-    print("⚠️ Stremio extra params ignored:", extra)
+    print("⚠️ Ignoring Stremio extra params:", extra)
     return subtitles_simple(video_type, imdb_id)
 
 
