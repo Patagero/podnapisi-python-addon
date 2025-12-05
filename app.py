@@ -1,7 +1,7 @@
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 from flask_cors import CORS
 import requests
-import urllib.parse
+import re
 
 app = Flask(__name__)
 CORS(app)
@@ -9,35 +9,33 @@ CORS(app)
 API_URL = "https://www.podnapisi.net/subtitles/search/"
 
 
-# ---------------------------------------------
-# IMDb → Title
-# ---------------------------------------------
-def imdb_to_title(imdb_id):
-    url = f"https://www.imdb.com/title/{imdb_id}/"
-    headers = {"User-Agent": "Mozilla/5.0"}
-
-    r = requests.get(url, headers=headers)
-
-    if r.status_code != 200:
+# -----------------------------
+# Extract TITLE from Stremio filename
+# -----------------------------
+def extract_title(extra):
+    # Stremio pošlje: filename=Titanic.1997.4K.mkv&videoHash=....
+    match = re.search(r"filename=([^&]+)", extra)
+    if not match:
         return None
 
-    import re
-    import bs4
+    filename = match.group(1)
 
-    soup = bs4.BeautifulSoup(r.text, "html.parser")
-    tag = soup.find("meta", property="og:title")
-    if not tag:
-        return None
+    # odstrani končnice (.mkv, .mp4, .avi, itd.)
+    filename = re.sub(r"\.(mkv|mp4|avi|mov|wmv|flv)$", "", filename, flags=re.IGNORECASE)
 
-    full = tag["content"]
-    title = re.sub(r"\(\d{4}\).*", "", full).strip()
+    # odstrani letnico (1997), UHD oznake, resolucije, HDR, ipd.
+    filename = re.sub(r"\b(19\d{2}|20\d{2})\b", "", filename)
+    filename = re.sub(r"\b(720p|1080p|2160p|4K|HDR|HDR10|HDR10\+|DV|DoVi|Remux|BDRip|UHD)\b", "", filename, flags=re.IGNORECASE)
+
+    # zamenjaj pike/spaces z normalnimi presledki
+    title = re.sub(r"[._]+", " ", filename).strip()
 
     return title
 
 
-# ---------------------------------------------
-# Get subtitles via JSON API (never CF blocked!)
-# ---------------------------------------------
+# -----------------------------
+# Fetch subtitles from Podnapisi JSON API
+# -----------------------------
 def fetch_subtitles(title):
     params = {
         "keywords": title,
@@ -68,43 +66,45 @@ def fetch_subtitles(title):
     return out
 
 
-# ---------------------------------------------
+# -----------------------------
 # Manifest
-# ---------------------------------------------
+# -----------------------------
 @app.route("/manifest.json")
 def manifest():
     return jsonify({
         "id": "org.formio.podnapisi.python",
-        "version": "3.0.0",
-        "name": "Podnapisi.NET 🇸🇮 Python Addon",
-        "description": "Stabilna verzija z uradnim JSON API (brez browserja, brez CF blockov).",
+        "version": "5.0.0",
+        "name": "Podnapisi.NET 🇸🇮 Python Addon (No IMDb, No API Key)",
+        "description": "Direct filename → Podnapisi.NET JSON API (fast, stable, simple).",
         "idPrefixes": ["tt"],
         "types": ["movie", "series"],
         "resources": ["subtitles"]
     })
 
 
-# ---------------------------------------------
+# -----------------------------
 # Subtitles endpoint
-# ---------------------------------------------
-@app.route("/subtitles/<type>/<imdb_id>.json")
-def subtitles_simple(type, imdb_id):
-    title = imdb_to_title(imdb_id)
+# -----------------------------
+@app.route("/subtitles/<type>/<imdb_id>/<extra>.json")
+def subtitles_with_extra(type, imdb_id, extra):
+
+    title = extract_title(extra)
+
     if not title:
         return jsonify({"subtitles": []})
 
     results = fetch_subtitles(title)
-
     return jsonify({"subtitles": results})
 
 
-@app.route("/subtitles/<type>/<imdb_id>/<extra>.json")
-def subtitles_extra(type, imdb_id, extra):
-    return subtitles_simple(type, imdb_id)
+# fallback, če Stremio ne pošlje extra
+@app.route("/subtitles/<type>/<imdb_id>.json")
+def subtitles_basic(type, imdb_id):
+    return jsonify({"subtitles": []})
 
 
-# ---------------------------------------------
-# Run server
-# ---------------------------------------------
+# -----------------------------
+# Run
+# -----------------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
