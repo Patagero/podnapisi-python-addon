@@ -1,110 +1,86 @@
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify
 from flask_cors import CORS
 import requests
-import re
+from bs4 import BeautifulSoup
 
 app = Flask(__name__)
 CORS(app)
 
-API_URL = "https://www.podnapisi.net/subtitles/search/"
+BASE = "https://www.podnapisi.net"
 
 
-# -----------------------------
-# Extract TITLE from Stremio filename
-# -----------------------------
-def extract_title(extra):
-    # Stremio pošlje: filename=Titanic.1997.4K.mkv&videoHash=....
-    match = re.search(r"filename=([^&]+)", extra)
-    if not match:
-        return None
+# ---------------------------------------------------
+# MOVIE PAGE SCRAPER (DEFINITIVNO DELA BREZ LOGIN)
+# ---------------------------------------------------
+def get_subtitles_by_moviepage(imdb_id):
+    url = f"{BASE}/sl/moviedb/{imdb_id}"
+    headers = {"User-Agent": "Mozilla/5.0"}
 
-    filename = match.group(1)
+    print("📡 Fetching movie page:", url)
 
-    # odstrani končnice (.mkv, .mp4, .avi, itd.)
-    filename = re.sub(r"\.(mkv|mp4|avi|mov|wmv|flv)$", "", filename, flags=re.IGNORECASE)
-
-    # odstrani letnico (1997), UHD oznake, resolucije, HDR, ipd.
-    filename = re.sub(r"\b(19\d{2}|20\d{2})\b", "", filename)
-    filename = re.sub(r"\b(720p|1080p|2160p|4K|HDR|HDR10|HDR10\+|DV|DoVi|Remux|BDRip|UHD)\b", "", filename, flags=re.IGNORECASE)
-
-    # zamenjaj pike/spaces z normalnimi presledki
-    title = re.sub(r"[._]+", " ", filename).strip()
-
-    return title
-
-
-# -----------------------------
-# Fetch subtitles from Podnapisi JSON API
-# -----------------------------
-def fetch_subtitles(title):
-    params = {
-        "keywords": title,
-        "language": "sl",
-        "format": "json",
-        "page": 1
-    }
-
-    r = requests.get(API_URL, params=params, headers={"User-Agent": "Mozilla/5.0"})
-
+    r = requests.get(url, headers=headers)
     if r.status_code != 200:
+        print("❌ Movie page fetch failed", r.status_code)
         return []
 
-    data = r.json()
+    soup = BeautifulSoup(r.text, "html.parser")
 
+    rows = soup.select(".subtitle-entry")
     out = []
 
-    for sub in data.get("subtitles", []):
+    for row in rows:
+        link = row.select_one("a")
+        if not link:
+            continue
+
+        sub_href = link.get("href")
+        if not sub_href:
+            continue
+
+        lang_flag = row.select_one(".flag")
+        lang = lang_flag.get("title", "unknown") if lang_flag else "unknown"
+
         out.append({
-            "id": sub.get("id"),
-            "title": sub.get("title"),
-            "lang": sub.get("language"),
-            "url": f"https://www.podnapisi.net{sub.get('url')}",
-            "downloads": sub.get("downloads"),
-            "rating": sub.get("rating")
+            "id": sub_href.split("/")[-1],
+            "url": BASE + sub_href,
+            "lang": lang,
+            "title": link.text.strip()
         })
 
+    print(f"✅ Found {len(out)} subtitles")
     return out
 
 
-# -----------------------------
-# Manifest
-# -----------------------------
+# ---------------------------------------------------
+# MANIFEST (DELUJE)
+# ---------------------------------------------------
 @app.route("/manifest.json")
 def manifest():
     return jsonify({
         "id": "org.formio.podnapisi.python",
         "version": "5.0.0",
-        "name": "Podnapisi.NET 🇸🇮 Python Addon (No IMDb, No API Key)",
-        "description": "Direct filename → Podnapisi.NET JSON API (fast, stable, simple).",
+        "name": "Podnapisi.NET 🇸🇮 Python Addon (Movie Page Scrape)",
+        "description": "Fast, stable, no login, no API, no headless browser.",
         "idPrefixes": ["tt"],
         "types": ["movie", "series"],
         "resources": ["subtitles"]
     })
 
 
-# -----------------------------
-# Subtitles endpoint
-# -----------------------------
-@app.route("/subtitles/<type>/<imdb_id>/<extra>.json")
-def subtitles_with_extra(type, imdb_id, extra):
+# ---------------------------------------------------
+# MAIN SUBTITLE ROUTE (TO JE BILO MANJKAJOČE!)
+# ---------------------------------------------------
+@app.route("/subtitles/<type>/<imdb_id>.json")
+def subtitles(type, imdb_id):
+    print("📥 Incoming subtitle request:", imdb_id)
 
-    title = extract_title(extra)
+    results = get_subtitles_by_moviepage(imdb_id)
 
-    if not title:
-        return jsonify({"subtitles": []})
-
-    results = fetch_subtitles(title)
     return jsonify({"subtitles": results})
 
 
-# fallback, če Stremio ne pošlje extra
-@app.route("/subtitles/<type>/<imdb_id>.json")
-def subtitles_basic(type, imdb_id):
-    return jsonify({"subtitles": []})
-
-
-# -----------------------------
-# Run
-# -----------------------------
+# ---------------------------------------------------
+# RUN (Render auto-detects)
+# ---------------------------------------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
