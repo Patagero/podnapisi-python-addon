@@ -2,6 +2,7 @@ from flask import Flask, jsonify
 from flask_cors import CORS
 import requests
 from bs4 import BeautifulSoup
+import re
 
 app = Flask(__name__)
 CORS(app)
@@ -10,21 +11,38 @@ BASE = "https://www.podnapisi.net"
 
 
 # ---------------------------------------------------
-# MOVIE PAGE SCRAPER (DEFINITIVNO DELA BREZ LOGIN)
+# GET CLEAN TITLE FROM IMDb
 # ---------------------------------------------------
-def get_subtitles_by_moviepage(imdb_id):
-    url = f"{BASE}/sl/moviedb/{imdb_id}"
-    headers = {"User-Agent": "Mozilla/5.0"}
-
-    print("📡 Fetching movie page:", url)
-
-    r = requests.get(url, headers=headers)
-    if r.status_code != 200:
-        print("❌ Movie page fetch failed", r.status_code)
-        return []
+def imdb_to_title(imdb_id):
+    url = f"https://www.imdb.com/title/{imdb_id}/"
+    r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"})
 
     soup = BeautifulSoup(r.text, "html.parser")
+    meta = soup.find("meta", property="og:title")
+    if not meta:
+        return None
 
+    title = meta["content"]
+    title = re.sub(r"\(\d{4}\).*", "", title).strip()
+    return title
+
+
+# ---------------------------------------------------
+# SEARCH PODNAPISI.NET FOR SUBTITLES
+# ---------------------------------------------------
+def search_subtitles(title):
+    print("🔍 Searching for:", title)
+
+    params = {
+        "keywords": title,
+        "language": "sl",
+        "sort": "downloads"
+    }
+
+    r = requests.get(f"{BASE}/sl/subtitles/search", params=params, headers={"User-Agent": "Mozilla/5.0"})
+
+    soup = BeautifulSoup(r.text, "html.parser")
+    
     rows = soup.select(".subtitle-entry")
     out = []
 
@@ -33,34 +51,32 @@ def get_subtitles_by_moviepage(imdb_id):
         if not link:
             continue
 
-        sub_href = link.get("href")
-        if not sub_href:
-            continue
+        href = link.get("href")
 
         lang_flag = row.select_one(".flag")
         lang = lang_flag.get("title", "unknown") if lang_flag else "unknown"
 
         out.append({
-            "id": sub_href.split("/")[-1],
-            "url": BASE + sub_href,
+            "id": href.split("/")[-1],
+            "url": BASE + href,
+            "title": link.text.strip(),
             "lang": lang,
-            "title": link.text.strip()
         })
 
-    print(f"✅ Found {len(out)} subtitles")
+    print("✅ Found", len(out), "subtitles")
     return out
 
 
 # ---------------------------------------------------
-# MANIFEST (DELUJE)
+# MANIFEST
 # ---------------------------------------------------
 @app.route("/manifest.json")
 def manifest():
     return jsonify({
         "id": "org.formio.podnapisi.python",
-        "version": "5.0.0",
-        "name": "Podnapisi.NET 🇸🇮 Python Addon (Movie Page Scrape)",
-        "description": "Fast, stable, no login, no API, no headless browser.",
+        "version": "6.0.0",
+        "name": "Podnapisi.NET 🇸🇮 Python Addon (Search Based)",
+        "description": "Ultra-stable version using search instead of movie page.",
         "idPrefixes": ["tt"],
         "types": ["movie", "series"],
         "resources": ["subtitles"]
@@ -68,19 +84,23 @@ def manifest():
 
 
 # ---------------------------------------------------
-# MAIN SUBTITLE ROUTE (TO JE BILO MANJKAJOČE!)
+# SUBTITLES ENDPOINT (MAIN)
 # ---------------------------------------------------
 @app.route("/subtitles/<type>/<imdb_id>.json")
 def subtitles(type, imdb_id):
-    print("📥 Incoming subtitle request:", imdb_id)
+    print("📥 Request:", imdb_id)
 
-    results = get_subtitles_by_moviepage(imdb_id)
+    title = imdb_to_title(imdb_id)
+    if not title:
+        return jsonify({"subtitles": []})
+
+    results = search_subtitles(title)
 
     return jsonify({"subtitles": results})
 
 
 # ---------------------------------------------------
-# RUN (Render auto-detects)
+# RUN
 # ---------------------------------------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
