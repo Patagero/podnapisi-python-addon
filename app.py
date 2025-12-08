@@ -1,6 +1,6 @@
 from flask import Flask, jsonify
 from flask_cors import CORS
-import requests
+import cloudscraper
 from bs4 import BeautifulSoup
 import re
 
@@ -9,13 +9,21 @@ CORS(app)
 
 BASE = "https://www.podnapisi.net"
 
+# Cloudflare bypass scraper
+scraper = cloudscraper.create_scraper(
+    browser={
+        "browser": "chrome",
+        "platform": "windows",
+        "mobile": False
+    }
+)
 
 # ---------------------------------------------------
-# GET CLEAN TITLE FROM IMDb
+# GET TITLE FROM IMDb
 # ---------------------------------------------------
 def imdb_to_title(imdb_id):
     url = f"https://www.imdb.com/title/{imdb_id}/"
-    r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"})
+    r = scraper.get(url)
 
     soup = BeautifulSoup(r.text, "html.parser")
     meta = soup.find("meta", property="og:title")
@@ -28,10 +36,10 @@ def imdb_to_title(imdb_id):
 
 
 # ---------------------------------------------------
-# SEARCH PODNAPISI.NET FOR SUBTITLES
+# SEARCH SUBTITLES THROUGH Cloudflare-bypassed SESSION
 # ---------------------------------------------------
 def search_subtitles(title):
-    print("🔍 Searching for:", title)
+    print("🔍 Searching:", title)
 
     params = {
         "keywords": title,
@@ -39,11 +47,15 @@ def search_subtitles(title):
         "sort": "downloads"
     }
 
-    r = requests.get(f"{BASE}/sl/subtitles/search", params=params, headers={"User-Agent": "Mozilla/5.0"})
+    r = scraper.get(f"{BASE}/sl/subtitles/search", params=params)
+    html = r.text
 
-    soup = BeautifulSoup(r.text, "html.parser")
-    
+    soup = BeautifulSoup(html, "html.parser")
     rows = soup.select(".subtitle-entry")
+
+    print("HTML length:", len(html))
+    print("Found entries:", len(rows))
+
     out = []
 
     for row in rows:
@@ -52,18 +64,13 @@ def search_subtitles(title):
             continue
 
         href = link.get("href")
-
-        lang_flag = row.select_one(".flag")
-        lang = lang_flag.get("title", "unknown") if lang_flag else "unknown"
-
         out.append({
             "id": href.split("/")[-1],
             "url": BASE + href,
             "title": link.text.strip(),
-            "lang": lang,
+            "lang": "sl"
         })
 
-    print("✅ Found", len(out), "subtitles")
     return out
 
 
@@ -74,9 +81,9 @@ def search_subtitles(title):
 def manifest():
     return jsonify({
         "id": "org.formio.podnapisi.python",
-        "version": "6.0.0",
-        "name": "Podnapisi.NET 🇸🇮 Python Addon (Search Based)",
-        "description": "Ultra-stable version using search instead of movie page.",
+        "version": "7.0.0",
+        "name": "Podnapisi.NET 🇸🇮 Python Addon (Cloudflare Bypass)",
+        "description": "Search-based + Cloudflare bypass = WORKING subtitles.",
         "idPrefixes": ["tt"],
         "types": ["movie", "series"],
         "resources": ["subtitles"]
@@ -84,19 +91,19 @@ def manifest():
 
 
 # ---------------------------------------------------
-# SUBTITLES ENDPOINT (MAIN)
+# MAIN SUBTITLES ROUTE
 # ---------------------------------------------------
 @app.route("/subtitles/<type>/<imdb_id>.json")
 def subtitles(type, imdb_id):
-    print("📥 Request:", imdb_id)
+    print("📥 Request for:", imdb_id)
 
     title = imdb_to_title(imdb_id)
     if not title:
         return jsonify({"subtitles": []})
 
-    results = search_subtitles(title)
+    subs = search_subtitles(title)
 
-    return jsonify({"subtitles": results})
+    return jsonify({"subtitles": subs})
 
 
 # ---------------------------------------------------
